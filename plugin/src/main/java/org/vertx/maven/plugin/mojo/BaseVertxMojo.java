@@ -16,20 +16,60 @@ package org.vertx.maven.plugin.mojo;
  * limitations under the License.
  */
 
+import org.apache.maven.artifact.Artifact;
+import org.apache.maven.artifact.DefaultArtifact;
+import org.apache.maven.artifact.factory.ArtifactFactory;
+import org.apache.maven.artifact.metadata.ArtifactMetadataSource;
+import org.apache.maven.artifact.repository.ArtifactRepository;
+import org.apache.maven.artifact.resolver.ArtifactResolutionResult;
+import org.apache.maven.artifact.resolver.ArtifactResolver;
+import org.apache.maven.artifact.resolver.filter.AndArtifactFilter;
+import org.apache.maven.artifact.resolver.filter.ScopeArtifactFilter;
 import org.apache.maven.plugin.AbstractMojo;
+import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
-import org.vertx.java.core.json.JsonObject;
+import org.apache.maven.project.MavenProjectBuilder;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.net.URI;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 import static java.nio.file.Files.readAllBytes;
 
 public abstract class BaseVertxMojo extends AbstractMojo {
 
+  @Parameter(defaultValue = "${project.dependencyArtifacts}", required = true, readonly = true)
+  private Set<Artifact> dependencyArtifacts;
+
+  @Parameter(defaultValue = "${project}", required = true, readonly = true) 
   protected MavenProject project;
+    
+  @Parameter(defaultValue = "${localRepository}", required = true, readonly = true) 
+  private ArtifactRepository localRepository;
+
+  @Parameter(defaultValue = "${project.remoteArtifactRepositories}", required = true, readonly = true) 
+  private List<ArtifactRepository> remoteRepositories;
+
+  @Component
+  private ArtifactResolver resolver;
+    
+  @Component
+  private MavenProjectBuilder mavenProjectBuilder;
+    
+  @Component
+  private ArtifactFactory artifactFactory;
+    
+  @Component
+  private ArtifactMetadataSource artifactMetadataSource;
+
 
   /**
    * The name of the module to run.
@@ -67,29 +107,56 @@ public abstract class BaseVertxMojo extends AbstractMojo {
   @Parameter(defaultValue = "target/mods")
   protected File modsDir;
 
-  protected JsonObject getConf() {
-    JsonObject config = null;
-    final String confContent = readConfigFile(configFile);
-    if (confContent != null && !confContent.isEmpty()) {
-      config = new JsonObject(confContent);
+  
+  protected List<URL> getPlatformDependencies() throws Exception {
+    Set<Artifact> vertxArtifacts = new HashSet<Artifact>();
+    //System.out.println(dependencyArtifacts);
+    for (Artifact a : dependencyArtifacts) {
+      if (a.getGroupId().equals("io.vertx")) {
+        if (a.getArtifactId().equals("vertx-core") || a.getArtifactId().equals("vertx-platform")) {
+          resolver.resolve(a, remoteRepositories, localRepository);
+          vertxArtifacts.add(a);
+          MavenProject pomProject = mavenProjectBuilder.buildFromRepository(a, remoteRepositories, localRepository);
+          AndArtifactFilter filter = new AndArtifactFilter();  
+          filter.add(new ScopeArtifactFilter(DefaultArtifact.SCOPE_COMPILE));
+          if (a.getDependencyFilter() != null) {
+            filter.add(a.getDependencyFilter());
+          }
+          Set<?> artifacts = pomProject.createArtifacts(artifactFactory, null, null);
+          artifacts.removeAll(dependencyArtifacts);
+          ArtifactResolutionResult arr = resolver.resolveTransitively(artifacts, a, pomProject.getManagedVersionMap(), localRepository, remoteRepositories, artifactMetadataSource, filter);
+          vertxArtifacts.addAll(arr.getArtifacts());
+        }
+      }
     }
-    return config;
+
+    List<URL> urls = new ArrayList<>();
+    for (Artifact a : vertxArtifacts) {
+      getLog().debug("vertx dependency:" + a);
+      urls.add(a.getFile().toURI().toURL());
+    }
+    return urls;
   }
 
-  private String readConfigFile(final File file) {
-    if (file == null || !file.exists() || !file.isFile()) {
-      return null;
-    }
-
-    try {
-      final URI uri = file.toURI();
-      return new String(readAllBytes(java.nio.file.Paths.get(uri)));
-    } catch (final IOException e) {
-      e.printStackTrace();
-      // just returns an empty string. Nothing to be thrown
-    }
-
-    return null;
+  protected ClassLoader getPlatformClassLoader() throws Exception {
+    List<URL> urls = getPlatformDependencies();
+    return new URLClassLoader(urls.toArray(new URL[urls.size()]));
   }
+  
+  protected void starterMain(String... args) throws Exception {
+      System.setProperty("vertx.mods", modsDir.getAbsolutePath());
+      
+      for (Object e : project.getRuntimeClasspathElements()) {
+          getLog().debug("module dependency:" + e);
+      }
+      
+      ClassLoader platformClassLoader = getPlatformClassLoader();
+
+      Thread.currentThread().setContextClassLoader(platformClassLoader);
+      Method main = platformClassLoader.loadClass("org.vertx.java.platform.impl.cli.Starter").getMethod("main", new Class[] { String[].class });
+ 
+      main.invoke(null, new Object[] { args });
+  }
+
 }
 

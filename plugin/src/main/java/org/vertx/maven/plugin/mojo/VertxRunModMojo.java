@@ -1,18 +1,12 @@
 package org.vertx.maven.plugin.mojo;
 
+import static org.apache.maven.plugins.annotations.ResolutionScope.COMPILE_PLUS_RUNTIME;
+
+import java.util.ArrayList;
+import java.util.List;
+
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Mojo;
-import org.apache.maven.plugins.annotations.Parameter;
-import org.vertx.java.core.AsyncResult;
-import org.vertx.java.core.Handler;
-import org.vertx.java.platform.PlatformManager;
-
-import java.util.concurrent.CountDownLatch;
-
-import static java.lang.Long.MAX_VALUE;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static org.apache.maven.plugins.annotations.ResolutionScope.COMPILE_PLUS_RUNTIME;
-import static org.vertx.java.platform.PlatformLocator.factory;
 
 /*
  * Copyright 2001-2005 The Apache Software Foundation.
@@ -37,32 +31,21 @@ import static org.vertx.java.platform.PlatformLocator.factory;
 @Mojo(name = "runMod", requiresProject = true, threadSafe = false, requiresDependencyResolution = COMPILE_PLUS_RUNTIME)
 public class VertxRunModMojo extends BaseVertxMojo {
 
-
-
   @Override
   public void execute() throws MojoExecutionException {
-
     try {
-      System.setProperty("vertx.mods", modsDir.getAbsolutePath());
-      final PlatformManager pm = factory.createPlatformManager();
-      final CountDownLatch latch = new CountDownLatch(1);
-      pm.deployModule(moduleName, getConf(), instances,
-          new Handler<AsyncResult<String>>() {
-            @Override
-            public void handle(final AsyncResult<String> event) {
-              if (event.succeeded()) {
-                getLog().info("CTRL-C to stop server");
-              } else {
-                if (!event.succeeded()) {
-                  getLog().error(event.cause());
-                }
-                latch.countDown();
-              }
-            }
-          });
-      latch.await(MAX_VALUE, MILLISECONDS);
-    } catch (final Exception e) {
-      throw new MojoExecutionException(e.getMessage());
+      List<String> args = new ArrayList<>();
+      args.add("runmod");
+      args.add(moduleName);
+      if (configFile != null) {
+          args.add("-conf");
+          args.add(configFile.getPath());
+      }
+      args.add("-instances");
+      args.add(Integer.toString(instances));
+      starterMain(args.toArray(new String[args.size()]));
+    } catch (Exception exc) {
+      throw new MojoExecutionException(exc.getMessage());
     }
   }
 }
